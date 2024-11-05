@@ -1,1 +1,9 @@
 streamlit
+fitz 
+gTTS
+transformers
+pipeline
+numpy 
+pydub
+AudioSegment
+random
