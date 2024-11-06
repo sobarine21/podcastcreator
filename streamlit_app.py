@@ -26,12 +26,21 @@ def generate_file_hash(file_data):
     sha256_hash.update(file_data)
     return sha256_hash.hexdigest()
 
-def encrypt_pdf_aes(file, password, key_length=32):
-    """Encrypt PDF file using AES encryption."""
-    key = PBKDF2HMAC(algorithm=hashes.SHA256(), length=key_length, salt=os.urandom(16), iterations=100000, backend=default_backend()).derive(password.encode())
+def encrypt_pdf_aes(file, password, key_length=256):
+    """Encrypt PDF file using AES encryption with valid key size."""
+    
+    # Ensure the key length is valid for AES
+    if key_length not in [128, 192, 256]:
+        raise ValueError("Invalid key size for AES. Valid sizes are 128, 192, or 256 bits.")
+    
+    # Derive the encryption key from the password
+    key = PBKDF2HMAC(algorithm=hashes.SHA256(), length=key_length // 8, salt=os.urandom(16), iterations=100000, backend=default_backend()).derive(password.encode())
+    
+    # Encryption using AES (CBC mode)
     cipher = Cipher(algorithms.AES(key), modes.CBC(os.urandom(16)), backend=default_backend())
     encryptor = cipher.encryptor()
     
+    # Writing the encrypted PDF
     pdf_writer = PyPDF2.PdfWriter()
     reader = PyPDF2.PdfReader(file)
     for page in reader.pages:
@@ -85,7 +94,7 @@ if option == "Encrypt":
     if uploaded_file:
         # Select Encryption Algorithm and other options
         encryption_algorithm = st.selectbox("Choose encryption algorithm", ["AES", "RSA"])
-        key_length = st.slider("Select key length", min_value=16, max_value=512, step=16, value=256)
+        key_length = st.selectbox("Select AES key length", [128, 192, 256], index=2)  # Default to 256 bits
         
         # Watermark Option
         watermark_text = st.text_input("Enter watermark text (Optional)", "Confidential")
