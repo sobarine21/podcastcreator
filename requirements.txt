@@ -7,3 +7,4 @@ numpy
 pydub
 AudioSegment
 frontend
+PyPDF2
