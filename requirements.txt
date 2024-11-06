@@ -6,3 +6,4 @@ nltk
 wordcloud
 matplotlib
 PyPDF2
+langid
