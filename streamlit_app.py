@@ -145,4 +145,3 @@ elif option == "Decrypt":
         # File integrity check (SHA-256)
         file_hash = generate_file_hash(encrypted_file.getvalue())
         st.write(f"File Integrity Hash: {file_hash}")
-
