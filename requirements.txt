@@ -1,10 +1,5 @@
 streamlit
-gtts
-pydub
-googletrans
-nltk
-wordcloud
-matplotlib
 PyPDF2
-langid
-transformers
+cryptograph
+qrcode
+Pillow
