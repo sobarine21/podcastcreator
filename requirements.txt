@@ -1,14 +1,7 @@
 streamlit
-PyPDF2
 gtts
 pydub
-langid
-transformers
 googletrans
-matplotlib
-seaborn
-wordcloud
 nltk
-scipy
-numpy
-poppler 
+wordcloud
+matplotlib
