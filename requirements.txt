@@ -5,3 +5,4 @@ googletrans
 nltk
 wordcloud
 matplotlib
+PyPDF2
