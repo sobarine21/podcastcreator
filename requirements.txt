@@ -4,3 +4,4 @@ cryptography
 qrcode
 Pillow
 bs4
+requests_html
