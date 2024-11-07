@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
 from PyPDF2 import PdfReader, PdfWriter
 
 # Helper functions
@@ -35,8 +36,12 @@ def encrypt_pdf(pdf_data: bytes, password: str, key_size: int = 256) -> bytes:
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
     encryptor = cipher.encryptor()
 
-    # Encrypt the PDF content
-    encrypted_pdf = encryptor.update(pdf_data) + encryptor.finalize()
+    # Pad the PDF data to make its length a multiple of the block size
+    padder = padding.PKCS7(128).padder()
+    padded_data = padder.update(pdf_data) + padder.finalize()
+
+    # Encrypt the padded PDF content
+    encrypted_pdf = encryptor.update(padded_data) + encryptor.finalize()
 
     # Return the salt, IV, and encrypted data as a combined output
     return salt + iv + encrypted_pdf
@@ -59,7 +64,15 @@ def decrypt_pdf(encrypted_data: bytes, password: str, key_size: int = 256) -> by
 
     cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
     decryptor = cipher.decryptor()
-    return decryptor.update(encrypted_pdf) + decryptor.finalize()
+
+    # Decrypt the data
+    decrypted_pdf = decryptor.update(encrypted_pdf) + decryptor.finalize()
+
+    # Unpad the decrypted data
+    unpadder = padding.PKCS7(128).unpadder()
+    unpadded_data = unpadder.update(decrypted_pdf) + unpadder.finalize()
+
+    return unpadded_data
 
 def add_watermark(pdf_data: bytes, watermark_text: str) -> bytes:
     """Add watermark text to each page of the PDF."""
