@@ -1,298 +1,149 @@
-
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup, Comment
-import json
+import os
+import hashlib
+import base64
 import random
-import re
-from requests_html import HTMLSession
-from urllib.parse import urlparse
-from urllib.robotparser import RobotFileParser
-from langdetect import detect, LangDetectException
-import validators
-import pandas as pd
+import string
+import io
+import qrcode
+from zipfile import ZipFile
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.backends import default_backend
+from PyPDF2 import PdfReader, PdfWriter
 
-# Seed the language detector for consistent results
-from langdetect import DetectorFactory
-DetectorFactory.seed = 0
+# Helper functions
 
-# Initialize random user-agents to bypass bot detection
-def get_random_user_agent():
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.82 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Safari/605.1.15',
-        'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.90 Mobile Safari/537.36',
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
-    ]
-    return random.choice(user_agents)
+def generate_key(password: str, key_size: int = 256) -> bytes:
+    """Generate an AES key from a password using PBKDF2 with a secure salt."""
+    salt = os.urandom(16)  # 16-byte salt
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=key_size // 8,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    key = kdf.derive(password.encode())
+    return key, salt
 
-# Function to check if URL is valid
-def is_valid_url(url):
-    return validators.url(url)
+def encrypt_pdf(pdf_data: bytes, password: str, key_size: int = 256) -> bytes:
+    """Encrypt PDF data using AES in CBC mode with a derived key."""
+    key, salt = generate_key(password, key_size)
+    iv = os.urandom(16)  # 16-byte IV for AES-CBC
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
 
-# Function to check if scraping is allowed based on robots.txt
-def is_scraping_allowed(url):
-    parsed_url = urlparse(url)
-    robots_url = f"{parsed_url.scheme}://{parsed_url.netloc}/robots.txt"
-    rp = RobotFileParser()
-    rp.set_url(robots_url)
-    try:
-        rp.read()
-        return rp.can_fetch("*", url)
-    except:
-        return False
+    # Encrypt the PDF content
+    encrypted_pdf = encryptor.update(pdf_data) + encryptor.finalize()
 
-# Detect language
-def detect_language(text):
-    if not text or len(text.split()) < 3:
-        return "Insufficient text for detection"
-    try:
-        return detect(text)
-    except LangDetectException:
-        return "Detection failed"
+    # Return the salt, IV, and encrypted data as a combined output
+    return salt + iv + encrypted_pdf
 
-# Extract meta tags
-def extract_meta_tags(soup):
-    meta_info = {}
-    for tag in soup.find_all("meta"):
-        if tag.get("name"):
-            meta_info[tag.get("name")] = tag.get("content")
-        elif tag.get("property"):
-            meta_info[tag.get("property")] = tag.get("content")
-    return meta_info
+def decrypt_pdf(encrypted_data: bytes, password: str, key_size: int = 256) -> bytes:
+    """Decrypt PDF data using AES in CBC mode with the derived key."""
+    salt = encrypted_data[:16]
+    iv = encrypted_data[16:32]
+    encrypted_pdf = encrypted_data[32:]
 
-# Extract all links and categorize them
-def extract_links(url, soup):
-    internal_links, external_links = [], []
-    for link in soup.find_all("a", href=True):
-        if link["href"].startswith("http"):
-            if url in link["href"]:
-                internal_links.append(link["href"])
-            else:
-                external_links.append(link["href"])
-    return internal_links, external_links
+    # Derive the key using the same method
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=key_size // 8,
+        salt=salt,
+        iterations=100000,
+        backend=default_backend()
+    )
+    key = kdf.derive(password.encode())
 
-# Extract JSON-LD structured data
-def extract_json_ld(soup):
-    json_ld_data = []
-    for script in soup.find_all("script", type="application/ld+json"):
-        try:
-            json_ld_data.append(json.loads(script.string))
-        except json.JSONDecodeError:
-            continue
-    return json_ld_data
+    cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    return decryptor.update(encrypted_pdf) + decryptor.finalize()
 
-# Extract forms
-def extract_forms(soup):
-    forms = []
-    for form in soup.find_all("form"):
-        form_data = {
-            "action": form.get("action"),
-            "method": form.get("method"),
-            "inputs": []
-        }
-        for input_tag in form.find_all("input"):
-            input_data = {
-                "type": input_tag.get("type"),
-                "name": input_tag.get("name"),
-                "value": input_tag.get("value")
-            }
-            form_data["inputs"].append(input_data)
-        forms.append(form_data)
-    return forms
+def add_watermark(pdf_data: bytes, watermark_text: str) -> bytes:
+    """Add watermark text to each page of the PDF."""
+    pdf_reader = PdfReader(io.BytesIO(pdf_data))
+    pdf_writer = PdfWriter()
 
-# Extract scripts and tracking tags
-def extract_scripts_and_tracking(soup):
-    tracking_scripts = []
-    for script in soup.find_all("script"):
-        src = script.get("src")
-        if src:
-            if "analytics" in src or "tracking" in src:
-                tracking_scripts.append(src)
-    return tracking_scripts
+    for page in pdf_reader.pages:
+        # Adding watermark text to each page
+        page.merge_text(watermark_text)
+        pdf_writer.add_page(page)
 
-# Extract images and media content
-def extract_media(soup):
-    media_data = []
-    # Images
-    images = [{"src": img.get("src"), "alt": img.get("alt", "No alt text")} for img in soup.find_all("img", src=True)]
-    media_data.extend(images)
-    # Videos
-    videos = [{"src": video.get("src")} for video in soup.find_all("video", src=True)]
-    media_data.extend(videos)
-    return media_data
+    output_pdf = io.BytesIO()
+    pdf_writer.write(output_pdf)
+    return output_pdf.getvalue()
 
-# Extract comments from HTML
-def extract_comments(soup):
-    comments = []
-    for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
-        comments.append(comment)
-    return comments
+def generate_qr_code(data: str) -> bytes:
+    """Generate a QR code image for given data."""
+    qr = qrcode.QRCode(version=1, error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=10, border=4)
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill="black", back_color="white")
+    img_byte = io.BytesIO()
+    img.save(img_byte, format="PNG")
+    img_byte.seek(0)
+    return img_byte
 
-# Extract HTTP Headers and Status Code
-def extract_http_info(url):
-    try:
-        response = requests.get(url)
-        return {
-            "status_code": response.status_code,
-            "headers": dict(response.headers)
-        }
-    except requests.RequestException as e:
-        return {"error": str(e)}
+# Streamlit UI
 
-# Extract tables
-def extract_tables(soup):
-    tables = []
-    for table in soup.find_all("table"):
-        table_data = [[cell.get_text() for cell in row.find_all(["th", "td"])] for row in table.find_all("tr")]
-        tables.append(table_data)
-    return tables
+st.title("Advanced PDF Encryption & Decryption Tool with QR Decryption")
 
-# Extract headings
-def extract_headings(soup):
-    headings = {}
-    for level in range(1, 7):
-        headings[f"h{level}"] = [h.get_text() for h in soup.find_all(f"h{level}")]
-    return headings
+option = st.selectbox("Choose Operation", ["Encrypt PDF", "Decrypt PDF"])
 
-# Extract links to social media
-def extract_social_media_links(external_links):
-    social_links = []
-    social_media_domains = ["facebook", "twitter", "instagram", "linkedin", "youtube"]
-    for link in external_links:
-        if any(domain in link for domain in social_media_domains):
-            social_links.append(link)
-    return social_links
+if option == "Encrypt PDF":
+    uploaded_files = st.file_uploader("Upload PDF files to encrypt", type="pdf", accept_multiple_files=True)
+    password = st.text_input("Enter password for encryption", type="password")
+    key_size = st.selectbox("Select AES Key Size", [128, 192, 256])
 
-# Extract audio files
-def extract_audio_files(soup):
-    audio_files = []
-    for audio in soup.find_all("audio"):
-        src = audio.get("src")
-        if src:
-            audio_files.append(src)
-    return audio_files
+    watermark_text = st.text_input("Optional: Add watermark text to PDF pages")
+    if uploaded_files and password:
+        encrypted_files = []
+        
+        for uploaded_file in uploaded_files:
+            # Reading PDF content
+            pdf_data = uploaded_file.read()
 
-# Extract stylesheets
-def extract_stylesheets(soup):
-    stylesheets = []
-    for link in soup.find_all("link", rel="stylesheet"):
-        href = link.get("href")
-        if href:
-            stylesheets.append(href)
-    return stylesheets
+            # Add watermark if specified
+            if watermark_text:
+                pdf_data = add_watermark(pdf_data, watermark_text)
 
-# Extract iFrames
-def extract_iframes(soup):
-    iframes = []
-    for iframe in soup.find_all("iframe"):
-        src = iframe.get("src")
-        if src:
-            iframes.append(src)
-    return iframes
+            # Encrypt the PDF data
+            encrypted_pdf_data = encrypt_pdf(pdf_data, password, key_size)
 
-# Extract external JavaScript files
-def extract_external_js(soup):
-    external_js = []
-    for script in soup.find_all("script", src=True):
-        external_js.append(script.get("src"))
-    return external_js
+            # Store encrypted file and its name for later download
+            encrypted_files.append((encrypted_pdf_data, f"{uploaded_file.name}_encrypted.pdf"))
 
-# Extract HTTP response time
-def extract_http_response_time(url):
-    try:
-        response = requests.get(url)
-        return response.elapsed.total_seconds()
-    except requests.RequestException as e:
-        return {"error": str(e)}
+        # Option to download each encrypted PDF or as a ZIP
+        download_as_zip = st.checkbox("Download all encrypted files as ZIP")
 
-# Check for broken images
-def check_broken_images(media):
-    broken_images = []
-    for media_item in media:
-        if media_item.get("src"):
-            try:
-                response = requests.head(media_item["src"], timeout=5)
-                if response.status_code != 200:
-                    broken_images.append(media_item["src"])
-            except:
-                broken_images.append(media_item["src"])
-    return broken_images
-
-# Extract meta keywords
-def extract_meta_keywords(soup):
-    meta_keywords = []
-    meta_tags = soup.find_all("meta", {"name": "keywords"})
-    for meta_tag in meta_tags:
-        if meta_tag.get("content"):
-            meta_keywords.extend(meta_tag["content"].split(","))
-    return meta_keywords
-
-# New Function to Extract Contact Information
-def extract_contact_info(soup):
-    contact_info = {
-        "emails": [],
-        "phone_numbers": [],
-        "contact_forms": []
-    }
-
-    # 1. Extract email addresses using regex (mailto: links)
-    emails = set(re.findall(r'mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', str(soup)))
-    contact_info["emails"] = list(emails)
-
-    # 2. Extract phone numbers using regex (formats like (555) 555-5555, +1-555-555-5555)
-    phone_numbers = set(re.findall(r'(\+?\(?\d{1,4}\)?[\s\-]?\d{1,3}[\s\-]?\d{3}[\s\-]?\d{4})', str(soup)))
-    contact_info["phone_numbers"] = list(phone_numbers)
-
-    # 3. Extract forms (if the form contains "contact" in the action or method)
-    for form in soup.find_all("form"):
-        action = form.get("action", "").lower()
-        if "contact" in action:
-            contact_info["contact_forms"].append(form)
-
-    return contact_info
-
-# Main Scraping Function
-def scrape_website(url):
-    session = HTMLSession()
-    headers = {"User-Agent": get_random_user_agent()}
-    response = session.get(url, headers=headers)
-    soup = BeautifulSoup(response.content, "html.parser")
-
-    data = {
-        "language": detect_language(soup.get_text()),
-        "meta_tags": extract_meta_tags(soup),
-        "links": extract_links(url, soup),
-        "json_ld": extract_json_ld(soup),
-        "forms": extract_forms(soup),
-        "scripts_and_tracking": extract_scripts_and_tracking(soup),
-        "media": extract_media(soup),
-        "comments": extract_comments(soup),
-        "http_info": extract_http_info(url),
-        "tables": extract_tables(soup),
-        "headings": extract_headings(soup),
-        "social_media_links": extract_social_media_links(data["links"][1]),
-        "audio_files": extract_audio_files(soup),
-        "stylesheets": extract_stylesheets(soup),
-        "iframes": extract_iframes(soup),
-        "external_js": extract_external_js(soup),
-        "response_time": extract_http_response_time(url),
-        "broken_images": check_broken_images(data["media"]),
-        "meta_keywords": extract_meta_keywords(soup),
-        "contact_info": extract_contact_info(soup)
-    }
-    return data
-
-# Streamlit App Interface
-st.title("Web Data Extraction Tool")
-url = st.text_input("Enter a Website URL to Scrape", "")
-
-if st.button("Scrape Website"):
-    if is_valid_url(url):
-        if is_scraping_allowed(url):
-            data = scrape_website(url)
-            st.json(data) # Display scraped data as JSON
+        if download_as_zip:
+            zip_buffer = io.BytesIO()
+            with ZipFile(zip_buffer, "w") as zip_file:
+                for encrypted_pdf_data, file_name in encrypted_files:
+                    zip_file.writestr(file_name, encrypted_pdf_data)
+            zip_buffer.seek(0)
+            st.download_button("Download Encrypted PDFs as ZIP", zip_buffer, "encrypted_pdfs.zip", mime="application/zip")
         else:
-            st.warning("Scraping is not allowed for this website (robots.txt restrictions).")
-    else:
-        st.error("Invalid URL. Please enter a valid website address.")
+            for encrypted_pdf_data, file_name in encrypted_files:
+                st.download_button(f"Download {file_name}", encrypted_pdf_data, file_name)
+
+        # QR code for decryption information
+        if password:
+            qr_code_img = generate_qr_code(password)
+            st.image(qr_code_img, caption="QR Code for Decryption Key", width=150)
+            st.download_button("Download QR Code", qr_code_img, "decryption_qr.png", mime="image/png")
+
+elif option == "Decrypt PDF":
+    encrypted_file = st.file_uploader("Upload an encrypted PDF", type="pdf")
+    password = st.text_input("Enter decryption password", type="password")
+
+    if encrypted_file and password:
+        encrypted_data = encrypted_file.read()
+        
+        try:
+            decrypted_pdf_data = decrypt_pdf(encrypted_data, password)
+            st.download_button("Download Decrypted PDF", decrypted_pdf_data, "decrypted_file.pdf", mime="application/pdf")
+        except Exception as e:
+            st.error(f"Decryption failed: {e}")
