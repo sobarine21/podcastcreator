@@ -2,16 +2,14 @@ import streamlit as st
 import os
 import io
 import qrcode
-import random
-import string
 from zipfile import ZipFile
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import rsa, padding as asymmetric_padding
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 from PyPDF2 import PdfReader, PdfWriter
 
 # Helper functions
@@ -99,8 +97,8 @@ def generate_rsa_keys() -> tuple:
 def encrypt_pdf_rsa(pdf_data: bytes, public_key: bytes) -> bytes:
     """Encrypt PDF using RSA public key."""
     public_key_obj = serialization.load_pem_public_key(public_key, backend=default_backend())
-    encrypted_pdf = public_key_obj.encrypt(pdf_data, padding.OAEP(
-        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+    encrypted_pdf = public_key_obj.encrypt(pdf_data, asymmetric_padding.OAEP(
+        mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
         algorithm=hashes.SHA256(),
         label=None
     ))
@@ -109,8 +107,8 @@ def encrypt_pdf_rsa(pdf_data: bytes, public_key: bytes) -> bytes:
 def decrypt_pdf_rsa(encrypted_data: bytes, private_key: bytes) -> bytes:
     """Decrypt PDF using RSA private key."""
     private_key_obj = serialization.load_pem_private_key(private_key, password=None, backend=default_backend())
-    decrypted_pdf = private_key_obj.decrypt(encrypted_data, padding.OAEP(
-        mgf=padding.MGF1(algorithm=hashes.SHA256()),
+    decrypted_pdf = private_key_obj.decrypt(encrypted_data, asymmetric_padding.OAEP(
+        mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
         algorithm=hashes.SHA256(),
         label=None
     ))
@@ -127,14 +125,15 @@ if option == "Encrypt PDF":
     password = st.text_input("Enter password for encryption", type="password")
 
     # Choose Encryption Algorithm
-    encryption_algo = st.selectbox("Choose Encryption Algorithm", ["AES", "RSA", "DES", "3DES"])
+    encryption_algo = st.selectbox("Choose Encryption Algorithm", ["AES", "RSA"])
 
     if uploaded_files and password:
         encrypted_files = []
         
         for uploaded_file in uploaded_files:
             pdf_data = uploaded_file.read()
-            
+            encrypted_pdf_data = None
+
             if encryption_algo == "AES":
                 encrypted_pdf_data = encrypt_pdf_aes(pdf_data, password)
             
@@ -142,9 +141,8 @@ if option == "Encrypt PDF":
                 private_pem, public_pem = generate_rsa_keys()
                 encrypted_pdf_data = encrypt_pdf_rsa(pdf_data, public_pem)
 
-            # Other encryption algorithms can be added in a similar way (DES, 3DES, etc.)
-
-            encrypted_files.append((encrypted_pdf_data, f"{uploaded_file.name}_encrypted.pdf"))
+            if encrypted_pdf_data:
+                encrypted_files.append((encrypted_pdf_data, f"{uploaded_file.name}_encrypted.pdf"))
 
         # Option to download all PDFs as a ZIP
         download_as_zip = st.checkbox("Download as ZIP")
@@ -161,10 +159,7 @@ if option == "Encrypt PDF":
                 st.download_button(f"Download {file_name}", encrypted_pdf_data, file_name)
 
         # QR Code for decryption password or key
-        if encryption_algo == "AES":
-            qr_code_img = generate_qr_code(password)
-        elif encryption_algo == "RSA":
-            qr_code_img = generate_qr_code(public_pem.decode())
+        qr_code_img = generate_qr_code(password if encryption_algo == "AES" else public_pem.decode())
         st.image(qr_code_img, caption="QR Code for Decryption Key", width=150)
         st.download_button("Download QR Code", qr_code_img, "decryption_qr.png", mime="image/png")
 
